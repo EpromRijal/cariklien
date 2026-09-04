@@ -16,8 +16,10 @@ export async function onRequestPost(context) {
   const keyword = String(b.keyword || "").trim();
   if (!keyword) return json({ error: "Kata kunci wajib diisi." }, 400);
   const location = String(b.location || "").trim();
-  const country  = String(b.country || "ID").toUpperCase().slice(0, 2);
-  const role     = String(b.role || "").trim();
+  const country     = String(b.country || "ID").toUpperCase().slice(0, 2);
+  const countryName = String(b.countryName || "").trim();   // dari peta 197 negara di website
+  const language    = String(b.language || "").trim();
+  const role        = String(b.role || "").trim();
   let lim = parseInt(b.limit, 10); if (!lim || lim < 1) lim = 25; lim = Math.min(50, lim);
 
   const jobId = crypto.randomUUID();
@@ -32,7 +34,7 @@ export async function onRequestPost(context) {
     jobId,
     callbackUrl: origin + "/api/callback",
     sheetId: u.sheet_id,
-    source, keyword, location, country, limit: lim, role,
+    source, keyword, location, country, countryName, language, limit: lim, role,
   };
   const auth = "Basic " + btoa("website:" + u.secret);
 
