@@ -1,0 +1,810 @@
+{
+  "name": "Scraping Leads — Webhook (Template)",
+  "nodes": [
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a2",
+              "name": "googleSheetId",
+              "value": "={{ $json.body.sheetId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cfg",
+      "name": "⚙️ Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -240,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $('Webhook').first().json.body || {};\nconst keyword  = (b.keyword  || '').toString().trim();\nconst location = (b.location || '').toString().trim();\nconst role     = (b.role     || '').toString().trim();\nconst country  = ((b.country || 'ID').toString().trim().toUpperCase().slice(0,2)) || 'ID';\n\n// Kode negara -> [nama negara, bahasa hasil]\n// Nambah negara? Sisipkan satu baris. Yang gak terdaftar otomatis pakai bahasa Inggris.\nconst NEGARA = {\n  ID:['Indonesia','id'],      MY:['Malaysia','en'],        SG:['Singapore','en'],\n  PH:['Philippines','en'],    TH:['Thailand','th'],        VN:['Vietnam','vi'],\n  AU:['Australia','en'],      NZ:['New Zealand','en'],     IN:['India','en'],\n  US:['United States','en'],  CA:['Canada','en'],          GB:['United Kingdom','en'],\n  IE:['Ireland','en'],        AE:['United Arab Emirates','en'], SA:['Saudi Arabia','ar'],\n  JP:['Japan','ja'],          KR:['South Korea','ko'],     HK:['Hong Kong','en'],\n  DE:['Germany','de'],        NL:['Netherlands','nl'],     FR:['France','fr'],\n  ES:['Spain','es'],          IT:['Italy','it'],           PT:['Portugal','pt'],\n  BR:['Brazil','pt'],         MX:['Mexico','es'],          ZA:['South Africa','en'],\n  NG:['Nigeria','en'],        EG:['Egypt','ar'],           TR:['Turkey','tr']\n};\nconst info        = NEGARA[country] || [];\nconst countryName = (b.countryName || info[0] || country).toString().trim();\nconst language    = (b.language    || info[1] || 'en').toString().trim();\n\nconst ALLOWED = ['google_maps','instagram','linkedin'];\nlet source = String(b.source || 'google_maps').toLowerCase();\nif (ALLOWED.indexOf(source) < 0) source = 'google_maps';\n\nlet desired = parseInt(b.limit, 10);\nif (!desired || desired < 1) desired = 25;\ndesired = Math.min(50, desired);\n\n// Selalu sertakan nama negara — tanpa itu \"Sydney\" atau \"Cambridge\" bisa nyasar\nconst tempat  = location ? (location + ', ' + countryName) : countryName;\nconst igQuery = (keyword + (location ? (' ' + location) : '')).trim();\nconst liQuery = (((role ? role + ' ' : '') + keyword).trim()) || keyword;\nconst liBody  = { searchQuery: liQuery, maxItems: desired, profileScraperMode: 'Full + email search', locations: [tempat] };\nif (role) liBody.currentJobTitles = [role];\n\nreturn [{ json: {\n  hasKeyword: keyword.length > 0,\n  keyword, location, role, country, countryName, language, desired, source,\n  googleSheetId: $('⚙️ Config').first().json.googleSheetId,\n  jobId:       b.jobId       || '',\n  callbackUrl: b.callbackUrl || '',\n  mapsBody: { searchStringsArray: [keyword], locationQuery: tempat, maxCrawledPlacesPerSearch: desired, language: language, skipClosedPlaces: false, scrapeContacts: true },\n  igBody: { search: (igQuery || keyword), searchType: 'user', searchLimit: desired, enhanceUserSearchWithFacebookPage: true },\n  liBody\n} }];"
+      },
+      "id": "parse",
+      "name": "Parse Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?timeout=300",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Parse Params').first().json.mapsBody) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "eb2b8270-b054-47d6-90df-925f4db995d8",
+      "name": "Apify - Google Maps",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2416,
+        -128
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER-APIFY",
+          "name": "Apify"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst arr=v=>Array.isArray(v)?v.filter(x=>x!==undefined&&x!==null&&x!==''):(v?[v]:[]);\nconst apifyRows=$('Apify - Google Maps').all(); let places=[];\nfor(const r of apifyRows){const j=r.json; if(Array.isArray(j))places.push(...j); else if(j&&Array.isArray(j.data))places.push(...j.data); else places.push(j);}\nconst pp=$('Parse Params').first().json; const kw=pp.keyword||''; const loc=pp.location||''; const kwE=esc(kw); const locE=esc(loc);\nconst sheetUrl='https://docs.google.com/spreadsheets/d/'+($('⚙️ Config').first().json.googleSheetId)+'/edit';\nconst errP=places.find(a=>a&&a.error&&!a.placeId&&!a.title);\nif(errP){ return [{ json:{ count:0, keyword:kw, summaryText:`⚠️ Google Maps scraper error: ${esc(errP.error)}. Coba lagi atau ubah keyword.`, sheetUrl, leads:[] } }]; }\nconst existRows=$input.all().map(r=>r.json||{});\nconst existPid=new Set(); for(const e of existRows){ if(e.place_id!==undefined&&e.place_id!=='') existPid.add(String(e.place_id)); }\nconst pickSocial=(p,keys)=>{ for(const k of keys){ const a=arr(p[k]); if(a.length) return a[0]; } return ''; };\nconst leads=[]; let withPhone=0; let withEmail=0; let skippedDup=0; const seen=new Set();\nfor(const p of places){ if(!p||typeof p!=='object'||!(p.title||p.placeId))continue;\n const pid=String(p.placeId||'');\n if(pid && existPid.has(pid)){ skippedDup++; continue; }\n if(pid && seen.has(pid)) continue; if(pid) seen.add(pid);\n const phone=p.phone||p.phoneUnformatted||''; if(phone)withPhone++;\n const email=(arr(p.emails).concat(arr(p.email)))[0]||''; if(email)withEmail++;\n const instagram=pickSocial(p,['instagrams','instagram','instagramUrl','instagramUrls']);\n leads.push({ scraped_at:new Date().toISOString(), keyword:kw, location:loc, name:p.title||'', category:p.categoryName||(Array.isArray(p.categories)?p.categories.join(', '):'')||'', address:p.address||'', city:p.city||'', phone:p.phone||'', phone_unformatted:p.phoneUnformatted||'', website:p.website||'', email:email, ig:instagram, rating:(p.totalScore!==undefined?p.totalScore:''), reviews:(p.reviewsCount!==undefined?p.reviewsCount:''), maps_url:p.url||'', place_id:pid, source:'gmaps' });\n}\nconst total=places.length;\nconst dupNote=skippedDup>0?` (${skippedDup} udah ada di sheet, dilewati)`:'';\nlet summary;\nif(leads.length===0){ summary=`🔍 Selesai cari \"${kwE}\"${loc?(' di '+locE):''} di Google Maps. Nggak ada bisnis BARU${dupNote}. Coba keyword/lokasi lain.`; }\nelse { summary=`✅ ${leads.length} bisnis BARU dari Google Maps untuk \"${kwE}\"${loc?(' di '+locE):''} (${withPhone} ada telp, ${withEmail} ada email)${dupNote}.\\n\\n📄 Tersimpan di tab \"Maps Leads\":\\n${sheetUrl}`; }\nreturn [{ json:{ count:leads.length, total, keyword:kw, summaryText:summary, sheetUrl, leads } }];"
+      },
+      "id": "7cbbe1e7-18e3-48e6-a486-3ac8df7afc93",
+      "name": "Filter Maps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2864,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "leads",
+        "options": {}
+      },
+      "id": "371529db-1f4a-4824-aeb4-131b3ab17939",
+      "name": "Pecah Maps Leads",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        3472,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('⚙️ Config').first().json.googleSheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Maps Leads",
+          "cachedResultName": "Maps Leads"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "67e0324d-ccb6-4777-9889-862ca17a36f8",
+      "name": "Simpan ke Maps Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3696,
+        -320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER-SHEETS",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('⚙️ Config').first().json.googleSheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Maps Leads",
+          "cachedResultName": "Maps Leads"
+        },
+        "options": {}
+      },
+      "id": "26ac3c94-fcc7-4a13-93a2-b04815f63980",
+      "name": "Baca Maps (dedup)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2640,
+        -128
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER-SHEETS",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ig1",
+              "leftValue": "={{ $('Parse Params').first().json.source }}",
+              "rightValue": "instagram",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "35832d61-7d3d-41a0-85c2-281ddeba2866",
+      "name": "Sumber IG?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1008,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/apify~instagram-search-scraper/run-sync-get-dataset-items?timeout=300",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Parse Params').first().json.igBody) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "0c96737a-d552-4e90-ae49-cfa38aeccc93",
+      "name": "Apify - Instagram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2416,
+        496
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER-APIFY",
+          "name": "Apify"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('⚙️ Config').first().json.googleSheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "IG Leads",
+          "cachedResultName": "IG Leads"
+        },
+        "options": {}
+      },
+      "id": "170c2de9-ac87-4718-b0e3-40816d1f1347",
+      "name": "Baca IG (dedup)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2640,
+        496
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER-SHEETS",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst rows=$('Apify - Instagram').all(); let items=[];\nfor(const r of rows){const j=r.json; if(Array.isArray(j))items.push(...j); else if(j&&Array.isArray(j.data))items.push(...j.data); else if(j&&Array.isArray(j.users))items.push(...j.users); else items.push(j);}\nconst pp=$('Parse Params').first().json; const kw=pp.keyword||''; const loc=pp.location||''; const kwE=esc(kw); const locE=esc(loc);\nconst sheetUrl='https://docs.google.com/spreadsheets/d/'+($('⚙️ Config').first().json.googleSheetId)+'/edit';\nconst existRows=$input.all().map(r=>r.json||{});\nconst existU=new Set(); for(const e of existRows){ if(e.username!==undefined&&e.username!=='') existU.add(String(e.username).toLowerCase()); }\nconst pick=(o,keys)=>{ for(const k of keys){ if(o[k]!==undefined&&o[k]!==null&&o[k]!=='') return o[k]; } return ''; };\nconst leads=[]; let skippedDup=0; const seen=new Set();\nfor(const u of items){ if(!u||typeof u!=='object')continue;\n const username=String(pick(u,['username','userName','user_name'])||'').trim();\n if(!username)continue;\n const ul=username.toLowerCase();\n if(existU.has(ul)){ skippedDup++; continue; }\n if(seen.has(ul))continue; seen.add(ul);\n const full_name=pick(u,['fullName','full_name','fullname','name']);\n const followers=pick(u,['followersCount','followers','follower_count','followers_count']);\n const posts_count=pick(u,['postsCount','posts_count','mediaCount','media_count']);\n let category=String(pick(u,['businessCategoryName','categoryName','category','category_name'])||'').replace(/^None,?/i,'').trim(); if(category.toLowerCase()==='none')category='';\n const bio=pick(u,['biography','bio','description']);\n let phone=String(pick(u,['phone','public_phone_number','contactPhoneNumber','phoneNumber'])||'');\n let website='';\n const exts=Array.isArray(u.externalUrls)?u.externalUrls:[];\n for(const ex of exts){ const url=String((ex&&ex.url)||''); const lt=String((ex&&ex.link_type)||'');\n  if((lt==='whatsapp'||/wa\\.me|whatsapp/i.test(url))){ if(!phone){ const m=url.match(/wa\\.me\\/(\\d+)/)||url.match(/phone(?:Number)?=(\\d+)/); if(m)phone=m[1]; } }\n  else if(!website && url){ website=url; } }\n if(!website){ const eu=String(pick(u,['externalUrl','website','external_url'])||''); if(eu&&!/wa\\.me|whatsapp/i.test(eu))website=eu; }\n const email=pick(u,['email','public_email','businessEmail','business_email','publicEmail']);\n const is_verified=(u.verified===true||u.is_verified===true||u.isVerified===true);\n const profile_url=String(pick(u,['url','inputUrl','profile_url','profileUrl'])||('https://www.instagram.com/'+username+'/'));\n leads.push({ scraped_at:new Date().toISOString(), keyword:kw, username, full_name:full_name||'', followers:(followers===''?'':followers), posts_count:(posts_count===''?'':posts_count), category:category||'', bio:bio||'', website:website||'', email:email||'', phone:phone||'', is_verified, profile_url, source:'instagram' });\n}\nconst total=items.length;\nconst withWa=leads.filter(l=>l.phone).length;\nconst withContact=leads.filter(l=>l.phone||l.email||l.website).length;\nconst dupNote=skippedDup>0?` (${skippedDup} udah ada di sheet, dilewati)`:'';\nconst errItem=items.find(a=>a&&a.error&&!a.username);\nlet summary;\nif(leads.length===0){ if(errItem){ summary=`⚠️ Instagram: ${esc(errItem.error)}. Coba keyword lain atau lebih spesifik.`; } else { summary=`🔍 Selesai cari \"${kwE}\"${loc?(' di '+locE):''} di Instagram. Nggak ada profil BARU${dupNote}. Coba keyword lain.`; } }\nelse { summary=`✅ ${leads.length} profil IG BARU untuk \"${kwE}\"${loc?(' di '+locE):''} (${withWa} ada nomor WA, ${withContact} ada kontak/website)${dupNote}.\\n\\n📄 Tersimpan di tab \"IG Leads\":\\n${sheetUrl}`; }\nreturn [{ json:{ count:leads.length, total, keyword:kw, summaryText:summary, sheetUrl, leads } }];"
+      },
+      "id": "2a346e32-010e-46f9-a83e-e3ef89970c70",
+      "name": "Filter IG",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2864,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "leads",
+        "options": {}
+      },
+      "id": "72010400-4e6c-46c0-82c4-336a8253d75b",
+      "name": "Pecah IG Leads",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        3456,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('⚙️ Config').first().json.googleSheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "IG Leads",
+          "cachedResultName": "IG Leads"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "d0b6e61a-6a32-4263-a815-30236f787b0d",
+      "name": "Simpan ke IG Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3680,
+        496
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER-SHEETS",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "li1",
+              "leftValue": "={{ $('Parse Params').first().json.source }}",
+              "rightValue": "linkedin",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ec475e36-adfa-4cbb-ac1a-5010530f867f",
+      "name": "Sumber LinkedIn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1408,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apify.com/v2/acts/harvestapi~linkedin-profile-search/run-sync-get-dataset-items?timeout=300",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Parse Params').first().json.liBody) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "ad0634ba-8c95-49b5-b341-e1047ba2eb07",
+      "name": "Apify - LinkedIn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2416,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "PLACEHOLDER-APIFY",
+          "name": "Apify"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('⚙️ Config').first().json.googleSheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "LinkedIn Leads",
+          "cachedResultName": "LinkedIn Leads"
+        },
+        "options": {}
+      },
+      "id": "565a204d-04ab-475a-9725-1f817251a759",
+      "name": "Baca LI (dedup)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2640,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER-SHEETS",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst rows=$('Apify - LinkedIn').all(); let items=[];\nfor(const r of rows){const j=r.json; if(Array.isArray(j))items.push(...j); else if(j&&Array.isArray(j.data))items.push(...j.data); else if(j&&Array.isArray(j.elements))items.push(...j.elements); else items.push(j);}\nconst pp=$('Parse Params').first().json; const kw=pp.keyword||''; const loc=pp.location||''; const kwE=esc(kw); const locE=esc(loc);\nconst sheetUrl='https://docs.google.com/spreadsheets/d/'+($('⚙️ Config').first().json.googleSheetId)+'/edit';\nconst existRows=$input.all().map(r=>r.json||{});\nconst existKey=new Set();\nfor(const e of existRows){ const k=String(e.public_id||e.linkedin_url||'').toLowerCase(); if(k)existKey.add(k); }\nconst pick=(o,keys)=>{ for(const k of keys){ if(o&&o[k]!==undefined&&o[k]!==null&&o[k]!=='') return o[k]; } return ''; };\nconst firstOf=(v)=>Array.isArray(v)?(v[0]||''):v;\nconst leads=[]; let skippedDup=0; const seen=new Set();\nfor(const u of items){ if(!u||typeof u!=='object')continue;\n if(u.error&&!u.id&&!u.publicIdentifier&&!u.linkedinUrl&&!u.url)continue;\n const linkedin_url=String(pick(u,['linkedinUrl','url','profileUrl','publicUrl'])||'');\n let public_id=String(pick(u,['publicIdentifier','publicId','username'])||'');\n if(!public_id&&linkedin_url){ const m=linkedin_url.match(/\\/in\\/([^/?#]+)/); if(m)public_id=m[1]; }\n const key=(public_id||linkedin_url).toLowerCase();\n if(!key)continue;\n if(existKey.has(key)){skippedDup++;continue;}\n if(seen.has(key))continue; seen.add(key);\n const firstName=pick(u,['firstName','first_name']);\n const lastName=pick(u,['lastName','last_name']);\n let name=pick(u,['name','fullName','full_name']); if(!name)name=((firstName?firstName:'')+' '+(lastName?lastName:'')).trim();\n const headline=pick(u,['headline','occupation','subtitle']);\n let cp=u.currentPosition||u.currentJob||(Array.isArray(u.experience)?u.experience[0]:null)||(Array.isArray(u.positions)?u.positions[0]:null)||(Array.isArray(u.experiences)?u.experiences[0]:null);\n if(Array.isArray(cp))cp=cp[0];\n let job_title=cp?pick(cp,['title','position','jobTitle','role']):''; if(!job_title)job_title=pick(u,['jobTitle','title']);\n let company=cp?pick(cp,['companyName','company','company_name','organization']):''; if(company&&typeof company==='object')company=pick(company,['name','companyName']); if(!company)company=pick(u,['companyName','company']); if(company&&typeof company==='object')company=pick(company,['name','companyName']);\n let location=u.location; if(location&&typeof location==='object')location=pick(location,['linkedinText','parsed','text','name','default']); location=String(location||pick(u,['locationName','geoLocation'])||'');\n let email=pick(u,['email','workEmail','businessEmail']); if(!email)email=firstOf(u.emails)||''; if(email&&typeof email==='object')email=pick(email,['email','value','address']);\n let phone=pick(u,['phone','phoneNumber']); if(!phone)phone=firstOf(u.phones)||firstOf(u.phoneNumbers)||''; if(phone&&typeof phone==='object')phone=pick(phone,['phone','number','value']);\n leads.push({ scraped_at:new Date().toISOString(), keyword:kw, name:name||'', first_name:firstName||'', last_name:lastName||'', headline:headline||'', job_title:job_title||'', company:company||'', location:location||'', email:email||'', phone:phone||'', linkedin_url:linkedin_url||(public_id?('https://www.linkedin.com/in/'+public_id):''), public_id:public_id||'', source:'linkedin' });\n}\nconst total=items.length;\nconst withEmail=leads.filter(l=>l.email).length;\nconst dupNote=skippedDup>0?` (${skippedDup} udah ada di sheet, dilewati)`:'';\nconst errItem=items.find(a=>a&&a.error&&!a.publicIdentifier&&!a.linkedinUrl&&!a.url);\nlet summary;\nif(leads.length===0){ if(errItem){summary=`⚠️ LinkedIn: ${esc(errItem.error)}. Coba keyword lain.`;} else {summary=`🔍 Selesai cari \"${kwE}\"${loc?(' di '+locE):''} di LinkedIn. Nggak ada profil BARU${dupNote}. Coba keyword/role lain.`;} }\nelse { summary=`✅ ${leads.length} profil LinkedIn BARU untuk \"${kwE}\"${loc?(' di '+locE):''} (${withEmail} ada email)${dupNote}.\\n\\n📄 Tersimpan di tab \"LinkedIn Leads\":\\n${sheetUrl}`; }\nreturn [{ json:{ count:leads.length, total, keyword:kw, summaryText:summary, sheetUrl, leads } }];"
+      },
+      "id": "a41ddfff-543a-4b43-be0c-47b95168c6e8",
+      "name": "Filter LI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2864,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "leads",
+        "options": {}
+      },
+      "id": "410ef8e3-1581-463b-a78d-c9f244a089b9",
+      "name": "Pecah LI Leads",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        3456,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('⚙️ Config').first().json.googleSheetId }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "LinkedIn Leads",
+          "cachedResultName": "LinkedIn Leads"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "f293f409-e3c8-481b-a5b8-d4165647510e",
+      "name": "Simpan ke LI Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3680,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "PLACEHOLDER-SHEETS",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "scraping-leads",
+        "authentication": "basicAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -464,
+        96
+      ],
+      "id": "wh-scraping-leads-0001",
+      "name": "Webhook",
+      "webhookId": "a7f3c1e2-9b4d-4e6a-8c25-3d9f7b1a5e40",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "PLACEHOLDER-SECRET",
+          "name": "Secret Website"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"running\", \"jobId\": $('Parse Params').first().json.jobId } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        784,
+        288
+      ],
+      "id": "resp-running-0001",
+      "name": "Balas Cepat ke Website"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Parse Params').first().json.callbackUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ jobId: $('Parse Params').first().json.jobId, status: 'done', count: $json.count, total: $json.total, summaryText: $json.summaryText, sheetUrl: $json.sheetUrl }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3696,
+        64
+      ],
+      "id": "cb-website-0001",
+      "name": "Callback ke Website",
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "⚙️ Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚙️ Config": {
+      "main": [
+        [
+          {
+            "node": "Parse Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Params": {
+      "main": [
+        [
+          {
+            "node": "Balas Cepat ke Website",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Sumber IG?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sumber IG?": {
+      "main": [
+        [
+          {
+            "node": "Apify - Instagram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sumber LinkedIn?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sumber LinkedIn?": {
+      "main": [
+        [
+          {
+            "node": "Apify - LinkedIn",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Apify - Google Maps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify - Google Maps": {
+      "main": [
+        [
+          {
+            "node": "Baca Maps (dedup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baca Maps (dedup)": {
+      "main": [
+        [
+          {
+            "node": "Filter Maps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Maps": {
+      "main": [
+        [
+          {
+            "node": "Pecah Maps Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Callback ke Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pecah Maps Leads": {
+      "main": [
+        [
+          {
+            "node": "Simpan ke Maps Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify - Instagram": {
+      "main": [
+        [
+          {
+            "node": "Baca IG (dedup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baca IG (dedup)": {
+      "main": [
+        [
+          {
+            "node": "Filter IG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter IG": {
+      "main": [
+        [
+          {
+            "node": "Pecah IG Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Callback ke Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pecah IG Leads": {
+      "main": [
+        [
+          {
+            "node": "Simpan ke IG Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apify - LinkedIn": {
+      "main": [
+        [
+          {
+            "node": "Baca LI (dedup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baca LI (dedup)": {
+      "main": [
+        [
+          {
+            "node": "Filter LI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter LI": {
+      "main": [
+        [
+          {
+            "node": "Pecah LI Leads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Callback ke Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pecah LI Leads": {
+      "main": [
+        [
+          {
+            "node": "Simpan ke LI Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "timezone": "Asia/Jakarta"
+  },
+  "pinData": {}
+}
