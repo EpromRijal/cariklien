@@ -38,18 +38,43 @@ export async function onRequestPost(context) {
   };
   const auth = "Basic " + btoa("website:" + u.secret);
 
+  // n8n baru "menjawab" setelah scraping selesai (bisa 2-3 menit). Kita TIDAK
+  // menunggu selama itu — cukup pastikan request masuk & kunci lolos, lalu lepas.
+  // Hasil datang belakangan lewat /api/callback; browser polling yang menampilkannya.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);   // 12 detik cukup buat cek awal
+
   try {
     const r = await fetch(u.webhook_url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": auth },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
-    if (!r.ok) throw new Error("status " + r.status);
-  } catch (e) {
-    await env.DB.prepare("UPDATE jobs SET status='error', error_msg=?, finished_at=datetime('now') WHERE id=?")
-      .bind("Tidak bisa memulai pencarian: " + e.message, jobId).run();
-    return json({ error: "Gagal menghubungi mesin. Cek pengaturan atau coba lagi." }, 502);
-  }
+    clearTimeout(timer);
 
-  return json({ ok: true, jobId });
+    // Cuma error yang benar-benar bikin gagal:
+    if (r.status === 401 || r.status === 403) {
+      await failJob(env, jobId, "Kunci rahasia beda dengan yang di n8n.");
+      return json({ error: "Kunci rahasia beda dengan yang di n8n. Cek Pengaturan." }, 400);
+    }
+    if (r.status === 404) {
+      await failJob(env, jobId, "Webhook belum aktif di n8n.");
+      return json({ error: "Mesin belum aktif di n8n. Nyalakan tombol Active dulu." }, 400);
+    }
+    // status lain (200 / 500 / dll) = request masuk & kunci lolos → jalan.
+    return json({ ok: true, jobId });
+  } catch (e) {
+    clearTimeout(timer);
+    // Timeout = n8n nampung request tapi masih sibuk scraping. Itu normal, bukan gagal.
+    if (e.name === "AbortError") return json({ ok: true, jobId });
+    // Selain itu: beneran gak bisa dihubungi.
+    await failJob(env, jobId, "Tidak bisa memulai: " + e.message);
+    return json({ error: "Gagal menghubungi mesin. Cek alamat mesin di Pengaturan." }, 502);
+  }
+}
+
+async function failJob(env, jobId, msg) {
+  await env.DB.prepare("UPDATE jobs SET status='error', error_msg=?, finished_at=datetime('now') WHERE id=?")
+    .bind(msg, jobId).run();
 }

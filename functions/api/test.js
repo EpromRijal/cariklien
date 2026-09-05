@@ -19,6 +19,10 @@ export async function onRequestPost(context) {
       body: JSON.stringify({ jobId: "cek-koneksi", keyword: "", ping: true }),
     });
 
+    // 401/403 = kunci salah (ditolak sebelum workflow jalan).
+    // 404     = webhook belum aktif.
+    // Selain itu (termasuk 500) = request MASUK ke n8n & kunci LOLOS — koneksi OK.
+    // 500 cuma berarti workflow error waktu dikasih ping kosong ini, bukan masalah koneksi.
     if (r.status === 401 || r.status === 403)
       return json({ ok: false, error: "Kunci rahasia di sini beda dengan yang di n8n." }, 200);
     if (r.status === 404)
@@ -26,7 +30,7 @@ export async function onRequestPost(context) {
     if (false)
       return json({ ok: false, error: "n8n membalas kode " + r.status + ". Coba cek lagi." }, 200);
 
-    // Sampai sini: auth lolos, mesin hidup. Tandai setup selesai.
+    // Sampai sini: mesin terhubung & kunci cocok. Tandai setup selesai.
     await env.DB.prepare("UPDATE users SET setup_ok = 1 WHERE id = ?").bind(u.id).run();
     return json({ ok: true });
   } catch {
