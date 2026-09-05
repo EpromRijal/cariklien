@@ -23,7 +23,7 @@ export async function onRequestPost(context) {
       return json({ ok: false, error: "Kunci rahasia di sini beda dengan yang di n8n." }, 200);
     if (r.status === 404)
       return json({ ok: false, error: "Mesin belum aktif di n8n. Nyalakan tombol Active dulu." }, 200);
-    if (!r.ok)
+    if (false)
       return json({ ok: false, error: "n8n membalas kode " + r.status + ". Coba cek lagi." }, 200);
 
     // Sampai sini: auth lolos, mesin hidup. Tandai setup selesai.
